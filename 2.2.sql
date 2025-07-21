@@ -1,0 +1,250 @@
+---------------------------------------------------------------------------------------------
+-- ПРОВЕРКА ПОЛНЫХ ДУБЛИКАТОВ
+-- SELECT COUNT(*) - COUNT(DISTINCT (deal_rk, deal_num, deal_name, deal_sum, client_rk, 
+--                 account_rk, agreement_rk, deal_start_date, department_rk, 
+--                 product_rk, deal_type_cd, effective_from_date, effective_to_date)) 
+--                 AS duplicate_count
+-- FROM rd.deal_info;
+
+-- SELECT COUNT(*) - COUNT(DISTINCT (deal_rk, loan_holiday_type_cd, loan_holiday_start_date, 
+--                 loan_holiday_finish_date, loan_holiday_fact_finish_date, 
+--                 loan_holiday_finish_flg, loan_holiday_last_possible_date, 
+--                 effective_from_date, effective_to_date)) AS duplicate_count
+-- FROM rd.loan_holiday;
+
+-- SELECT COUNT(*) - COUNT(DISTINCT (product_rk, product_name, 
+--                 effective_from_date, effective_to_date)) AS duplicate_count
+-- FROM rd.product;
+
+----------------------------------------------------------------------------------------------
+-- УДАЛЕНИЕ ПОЛНЫХ ДУБЛИКАТОВ
+
+-- DELETE FROM rd.product
+-- WHERE ctid IN (
+-- 	SELECT unnest(dup_ctids[2:])
+-- 	FROM (
+-- 		SELECT 
+-- 			array_agg(ctid) AS dup_ctids,
+-- 			COUNT(*) AS cnt
+-- 		FROM rd.product
+-- 		GROUP BY 
+-- 			product_rk, product_name, 
+-- 			effective_from_date, effective_to_date
+-- 		HAVING COUNT(*) > 1
+-- 	) duplicates
+-- );
+----------------------------------------------------------------------------------------------
+-- пример проблемной строки с отсутствующими данными
+-- SELECT * FROM dm.loan_holiday_info
+-- WHERE deal_rk = 4056837;
+-----------------------------------------------------------------------------------------------
+-- Отдельно создам таблицы для загрузки CSV
+-- -- Временная таблица для сделок
+-- CREATE TABLE IF NOT EXISTS rd.tmp_deal_info (
+--     deal_rk BIGINT NOT NULL,
+--     deal_num TEXT,
+--     deal_name TEXT,
+--     deal_sum NUMERIC,
+--     client_rk BIGINT NOT NULL,
+--     account_rk BIGINT NOT NULL,
+--     agreement_rk BIGINT NOT NULL,
+--     deal_start_date DATE,
+--     department_rk BIGINT,
+--     product_rk BIGINT,
+--     deal_type_cd TEXT,
+--     effective_from_date DATE NOT NULL,
+--     effective_to_date DATE NOT NULL
+-- );
+
+-- -- Временная таблица для продуктов
+-- CREATE TABLE IF NOT EXISTS rd.tmp_product (
+--     product_rk BIGINT NOT NULL,
+--     product_name TEXT,
+--     effective_from_date DATE NOT NULL,
+--     effective_to_date DATE NOT NULL
+-- );
+-----------------------------------------------------------------------------------------------
+-- Далее запуск main.py и выгрузка в доп. таблицы
+-----------------------------------------------------------------------------------------------
+-- Поиск и добавление отсутствующих данных в основные таблицы
+-- Для продуктов
+-- INSERT INTO rd.product (product_rk, product_name, effective_from_date, effective_to_date)
+-- SELECT 
+--     tmp.product_rk,
+--     tmp.product_name,
+--     tmp.effective_from_date,
+--     tmp.effective_to_date
+-- FROM rd.tmp_product tmp
+-- WHERE NOT EXISTS (
+--     SELECT 1 
+--     FROM rd.product prod 
+--     WHERE prod.product_rk = tmp.product_rk 
+--     AND prod.effective_from_date = tmp.effective_from_date
+-- );
+
+-- -- Для сделок
+-- INSERT INTO rd.deal_info (
+--     deal_rk, deal_num, deal_name, deal_sum, client_rk, 
+--     account_rk, agreement_rk, deal_start_date, 
+--     department_rk, product_rk, deal_type_cd, 
+--     effective_from_date, effective_to_date
+-- )
+-- SELECT 
+--     tmp.deal_rk,
+--     tmp.deal_num,
+--     tmp.deal_name,
+--     tmp.deal_sum,
+--     tmp.client_rk,
+--     tmp.account_rk,
+--     tmp.agreement_rk,
+--     tmp.deal_start_date,
+--     tmp.department_rk,
+--     tmp.product_rk,
+--     tmp.deal_type_cd,
+--     tmp.effective_from_date,
+--     tmp.effective_to_date
+-- FROM rd.tmp_deal_info tmp
+-- WHERE NOT EXISTS (
+--     SELECT 1 
+--     FROM rd.deal_info di 
+--     WHERE di.deal_rk = tmp.deal_rk 
+--     AND di.effective_from_date = tmp.effective_from_date
+-- );
+-----------------------------------------------------------------------------------------------
+-- CREATE OR REPLACE PROCEDURE dm.refresh_loan_holiday_info()
+-- LANGUAGE plpgsql AS $$
+-- BEGIN
+--     -- Создаем временную таблицу с новыми данными
+--     CREATE TEMP TABLE tmp_refresh AS 
+--     WITH deal AS (
+--     SELECT 
+--         deal_rk,
+--         deal_num,
+--         deal_name,
+--         deal_sum,
+--         client_rk,
+--         agreement_rk,
+--         account_rk,
+--         deal_start_date,
+--         department_rk,
+--         product_rk,
+--         deal_type_cd,
+--         effective_from_date,
+--         effective_to_date
+--     FROM rd.deal_info
+-- ),
+-- loan_holiday AS (
+--     SELECT 
+--         deal_rk,
+--         loan_holiday_type_cd,
+--         loan_holiday_start_date,
+--         loan_holiday_finish_date,
+--         loan_holiday_fact_finish_date,
+--         loan_holiday_finish_flg,
+--         loan_holiday_last_possible_date,
+--         effective_from_date,
+--         effective_to_date
+--     FROM rd.loan_holiday
+-- ),
+-- product AS (
+--     SELECT 
+--         product_rk,
+--         product_name,
+--         effective_from_date,
+--         effective_to_date
+--     FROM rd.product
+-- )
+-- SELECT 
+--     d.deal_rk,
+--     d.effective_from_date,
+--     d.effective_to_date,
+--     d.agreement_rk,
+--     d.account_rk, 
+--     d.client_rk,
+--     d.department_rk,
+--     d.product_rk,
+--     p.product_name,
+--     d.deal_type_cd,
+--     d.deal_start_date,
+--     d.deal_name,
+--     d.deal_num AS deal_number,
+--     d.deal_sum,
+--     lh.loan_holiday_type_cd,
+--     lh.loan_holiday_start_date,
+--     lh.loan_holiday_finish_date,
+--     lh.loan_holiday_fact_finish_date,
+--     lh.loan_holiday_finish_flg,
+--     lh.loan_holiday_last_possible_date
+-- FROM deal d
+-- LEFT JOIN loan_holiday lh 
+--     ON d.deal_rk = lh.deal_rk 
+--     AND d.effective_from_date BETWEEN lh.effective_from_date AND lh.effective_to_date
+-- LEFT JOIN product p 
+--     ON d.product_rk = p.product_rk 
+--     AND d.effective_from_date BETWEEN p.effective_from_date AND p.effective_to_date;
+    
+--     -- Обновляем существующие записи
+--     UPDATE dm.loan_holiday_info lhi
+--     SET 
+--         agreement_rk = tr.agreement_rk,
+--         account_rk = tr.account_rk,
+--         client_rk = tr.client_rk,
+--         department_rk = tr.department_rk,
+--         product_rk = tr.product_rk,
+--         product_name = tr.product_name,
+--         deal_type_cd = tr.deal_type_cd,
+--         deal_start_date = tr.deal_start_date,
+--         deal_name = tr.deal_name,
+--         deal_number = tr.deal_number,
+--         deal_sum = tr.deal_sum,
+--         loan_holiday_type_cd = tr.loan_holiday_type_cd,
+--         loan_holiday_start_date = tr.loan_holiday_start_date,
+--         loan_holiday_finish_date = tr.loan_holiday_finish_date,
+--         loan_holiday_fact_finish_date = tr.loan_holiday_fact_finish_date,
+--         loan_holiday_finish_flg = tr.loan_holiday_finish_flg,
+--         loan_holiday_last_possible_date = tr.loan_holiday_last_possible_date
+--     FROM tmp_refresh tr
+--     WHERE lhi.deal_rk = tr.deal_rk
+--         AND lhi.effective_from_date = tr.effective_from_date;
+    
+--     -- Вставляем новые записи
+--     INSERT INTO dm.loan_holiday_info
+--     SELECT tr.*
+--     FROM tmp_refresh tr
+--     WHERE NOT EXISTS (
+--         SELECT 1 
+--         FROM dm.loan_holiday_info lhi
+--         WHERE lhi.deal_rk = tr.deal_rk
+--           AND lhi.effective_from_date = tr.effective_from_date
+--     );
+--     DROP TABLE tmp_refresh;
+--     COMMIT;
+-- END;
+-- $$;
+-----------------------------------------------------------------------------------------------
+-- -- Далее вызов процедуры
+-- CALL dm.refresh_loan_holiday_info();
+----------------------------------------------------------------------------------------------
+--Проверки
+-- SELECT 
+--     COUNT(*) AS total_rows,
+--     SUM(CASE WHEN product_name IS NOT NULL THEN 1 ELSE 0 END) AS non_null_product,
+--     SUM(CASE WHEN account_rk IS NOT NULL THEN 1 ELSE 0 END) AS non_null_account
+-- FROM dm.loan_holiday_info;
+
+-- SELECT *
+-- FROM dm.loan_holiday_info
+-- WHERE deal_rk IN (
+--     SELECT deal_rk 
+--     FROM dm.loan_holiday_info 
+--     WHERE product_name IS NULL
+-- );
+
+-- Проверка той самой проблемной строки
+-- SELECT * FROM dm.loan_holiday_info
+-- WHERE deal_rk = 4056837;
+
+-- SELECT deal_rk, COUNT(*) FROM dm.loan_holiday_info
+-- WHERE agreement_rk IS NULL
+-- GROUP BY deal_rk;
+--------------------------------------------------------------------------------------------------------
